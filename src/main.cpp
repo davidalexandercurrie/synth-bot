@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <driver/dac.h>
+#include "painlessMesh.h"
 #include <ArduinoJson.h>
 
 #define RXD2 16
@@ -21,8 +22,47 @@ bool playSineWave = false;
 bool playSqrWave = false;
 bool playSawWave = false;
 bool playTriWave = false;
-float freq = 0;
+float freq = 200;
 int wave = 0;
+
+#define MESH_PREFIX "whateverYouLike"
+#define MESH_PASSWORD "somethingSneaky"
+#define MESH_PORT 5555
+
+Scheduler userScheduler; // to control your personal task
+painlessMesh mesh;
+
+// User stub
+void sendMessage(); // Prototype so PlatformIO doesn't complain
+
+Task taskSendMessage(TASK_SECOND * 1, TASK_FOREVER, &sendMessage);
+
+void sendMessage()
+{
+  mesh.sendBroadcast(String(freq));
+  taskSendMessage.setInterval(random(TASK_SECOND * 1, TASK_SECOND * 5));
+}
+
+// Needed for painless library
+void receivedCallback(uint32_t from, String &msg)
+{
+  Serial.printf("startHere: Received from %u msg=%s\n", from, msg.c_str());
+}
+
+void newConnectionCallback(uint32_t nodeId)
+{
+  Serial.printf("--> startHere: New Connection, nodeId = %u\n", nodeId);
+}
+
+void changedConnectionCallback()
+{
+  Serial.printf("Changed connections\n");
+}
+
+void nodeTimeAdjustedCallback(int32_t offset)
+{
+  Serial.printf("Adjusted time %u. Offset = %d\n", mesh.getNodeTime(), offset);
+}
 
 float sine(float freq, float volume)
 {
@@ -108,6 +148,19 @@ void playSqr()
 void setup()
 {
   Serial.begin(115200);
+
+  //mesh.setDebugMsgTypes( ERROR | MESH_STATUS | CONNECTION | SYNC | COMMUNICATION | GENERAL | MSG_TYPES | REMOTE ); // all types on
+  mesh.setDebugMsgTypes(ERROR | STARTUP); // set before init() so that you can see startup messages
+
+  mesh.init(MESH_PREFIX, MESH_PASSWORD, &userScheduler, MESH_PORT);
+  mesh.onReceive(&receivedCallback);
+  mesh.onNewConnection(&newConnectionCallback);
+  mesh.onChangedConnections(&changedConnectionCallback);
+  mesh.onNodeTimeAdjusted(&nodeTimeAdjustedCallback);
+
+  userScheduler.addTask(taskSendMessage);
+  taskSendMessage.enable();
+
   Serial2.begin(115200, SERIAL_8N1, RXD2, TXD2);
   delay(1000);
   Serial.println("Started up...");
@@ -116,85 +169,81 @@ void setup()
 
 void loop()
 {
-  float output = saw(110, tri(sine(1.3, 1), 1)) + saw(222, sine(1.3, 1));
+  if (playSineWave)
+  {
+    playSqrWave = false;
+    playSawWave = false;
+    playTriWave = false;
+    playSine();
+  }
+  if (playSawWave)
+  {
+    playSqrWave = false;
+    playSineWave = false;
+    playTriWave = false;
+    playSaw();
+  }
+  if (playTriWave)
+  {
+    playSqrWave = false;
+    playSawWave = false;
+    playSineWave = false;
+    playTri();
+  }
+  if (playSqrWave)
+  {
+    playSineWave = false;
+    playSawWave = false;
+    playTriWave = false;
+    playSqr();
+  }
 
-  int out = output/2 * level;
+  if (Serial2.available())
+  {
+    // Allocate the JSON document
+    // This one must be bigger than for the sender because it must store the strings
+    StaticJsonDocument<300> doc;
 
-  dac_output_voltage(DAC_CHANNEL_1, out);
-  // if (playSineWave)
-  // {
-  //   playSqrWave = false;
-  //   playSawWave = false;
-  //   playTriWave = false;
-  //   playSine();
-  // }
-  // if (playSawWave)
-  // {
-  //   playSqrWave = false;
-  //   playSineWave = false;
-  //   playTriWave = false;
-  //   playSaw();
-  // }
-  // if (playTriWave)
-  // {
-  //   playSqrWave = false;
-  //   playSawWave = false;
-  //   playSineWave = false;
-  //   playTri();
-  // }
-  // if (playSqrWave)
-  // {
-  //   playSineWave = false;
-  //   playSawWave = false;
-  //   playTriWave = false;
-  //   playSqr();
-  // }
+    // Read the JSON document from the "link" serial port
+    DeserializationError err = deserializeJson(doc, Serial2);
 
-  // if (Serial2.available())
-  // {
-  //   // Allocate the JSON document
-  //   // This one must be bigger than for the sender because it must store the strings
-  //   StaticJsonDocument<300> doc;
+    if (err == DeserializationError::Ok)
+    {
+      // Print the values
+      // (we must use as<T>() to resolve the ambiguity)
+      Serial.println(doc["ready"].as<bool>());
+      if (doc["ready"].as<bool>())
+      {
+        freq = doc["freq"].as<float>();
+        String waveform = doc["waveshape"].as<String>();
+        if (waveform.equals("tri"))
+        {
+          playTriWave = true;
+        }
+        if (waveform.equals("sine"))
+        {
+          playSineWave = true;
+        }
+        if (waveform.equals("square"))
+        {
+          playSqrWave = true;
+        }
+        if (waveform.equals("saw"))
+        {
+          playSawWave = true;
+        }
+      }
+    }
+    else
+    {
+      // Print error to the "debug" serial port
+      Serial.print("deserializeJson() returned ");
+      Serial.println(err.c_str());
 
-  //   // Read the JSON document from the "link" serial port
-  //   DeserializationError err = deserializeJson(doc, Serial2);
-
-  //   if (err == DeserializationError::Ok)
-  //   {
-  //     // Print the values
-  //     // (we must use as<T>() to resolve the ambiguity)
-  //     Serial.println(doc["ready"].as<bool>());
-  //     if (doc["ready"].as<bool>())
-  //     {
-  //       freq = doc["freq"].as<float>();
-  //       String waveform = doc["waveshape"].as<String>();
-  //       if (waveform.equals("tri"))
-  //       {
-  //         playTriWave = true;
-  //       }
-  //       if (waveform.equals("sine"))
-  //       {
-  //         playSineWave = true;
-  //       }
-  //       if (waveform.equals("square"))
-  //       {
-  //         playSqrWave = true;
-  //       }
-  //       if (waveform.equals("saw"))
-  //       {
-  //         playSawWave = true;
-  //       }
-  //     }
-  //   }
-  //   else
-  //   {
-  //     // Print error to the "debug" serial port
-  //     Serial.print("deserializeJson() returned ");
-  //     Serial.println(err.c_str());
-
-  //     // Flush all bytes in the "link" serial port buffer
-  //     while (Serial2.available() > 0)
-  //       Serial2.read();
-  //   }
-  // }
+      // Flush all bytes in the "link" serial port buffer
+      while (Serial2.available() > 0)
+        Serial2.read();
+    }
+  }
+  mesh.update();
 }
